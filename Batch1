@@ -1,0 +1,540 @@
+/*:
+*
+* @plugindesc 1.0 Activates a QTE battle system for certain skills
+* @author JamieScript
+*
+* @param Crosshair Speed
+* @desc Speed of the crosshair's movement.
+* @type number
+* @default 5
+* 
+* @param Crosshair Icon ID
+* @desc The id of the icon that represents the crosshair
+* @type number
+* @default 1
+*
+* @param Target Zone Width
+* @desc The width of the enemy target zone, in pixels
+* @type number
+* @default 100
+* 
+* @param Critical Target Zone Width
+* @desc The width of the enemy critical target zone, in pixels
+* @type number
+* @default 30
+*
+* @param Shoot Skill IDs
+* @desc ID of the skills that trigger the QTE and use ammo
+* @type number[]
+* @default ["1"]
+*
+* @param Default Max Ammo
+* @desc The player's default max ammo
+* @type number
+* @default 10
+*
+* @help
+* 
+* This plugin adds a QTE to certain skills.
+*
+* Plugin Commands:
+*
+*   Ammo reloadPartially [actorId] [value] 
+*       # Partially reloads the character's ammo (cannot exceed max ammo)
+*   Ammo reloadFully [actorId]
+*        # Fully reloads the character's ammo (cannot exceed max ammo)
+*   Ammo increaseMaxAmmo [actorId] [value]
+*       # Increases the character's max ammo capacity
+*   Ammo decreaseMaxAmmo [actorId] [value] 
+*       # Decreases the character's max ammo capacity
+*
+*/
+
+/*
+=====================================================
+Game_QTEBattle
+=====================================================
+*/
+
+var QTEBattle = {};
+var QTEParams = PluginManager.parameters("JS_QTEBattle");
+QTEBattle.crosshairSpeed = eval(QTEParams["Crosshair Speed"]);
+QTEBattle.crosshairIconId = eval(QTEParams["Crosshair Icon ID"]);
+QTEBattle.targetZoneWidth = eval(QTEParams["Target Zone Width"]);
+QTEBattle.criticalTargetZoneWidth = eval(QTEParams["Critical Target Zone Width"]);
+QTEBattle.shootSkillIds = eval(QTEParams["Shoot Skill IDs"]).map(id => parseInt(id));
+QTEBattle.defaultMaxAmmo = eval(QTEParams["Default Max Ammo"]);
+
+/*
+=====================================================
+Plugin Commands
+=====================================================
+*/
+
+var qteBattle_gameInterpreter_pluginCommand_alias = Game_Interpreter.prototype.pluginCommand;
+Game_Interpreter.prototype.pluginCommand = function(command, args) {
+    qteBattle_gameInterpreter_pluginCommand_alias.call(this, command, args);
+    if (command === "Ammo") {
+        var actor = $gameActors.actor(eval(args[1]));
+        var command = String(args[0]);
+        switch (command) {
+            case "reloadPartially":
+                var value = eval(args[2]);
+                actor.gainAmmo(value);
+                break;
+            case "reloadFully":
+                actor.gainAmmo(actor.maxAmmo())
+                break;
+            case "increaseMaxAmmo":
+                var value = eval(args[2]);
+                actor.gainMaxAmmo(value);
+                break;
+            case "decreaseMaxAmmo":
+                var value = eval(args[2]);
+                actor.gainMaxAmmo(-value);
+                break;
+        }
+    }
+};
+
+function Game_QTEBattle(){
+    this.initialize.apply(this, arguments);
+}
+
+Game_QTEBattle.prototype.initialize = function(){
+    this.initMembers();
+}
+
+Game_QTEBattle.prototype.initMembers = function(){
+    this._isActive = false;
+    this._targetEnemy = null;
+}
+
+Game_QTEBattle.prototype.isTriggered = function(){
+    return Input.isTriggered("ok");
+}
+
+var $gameQTEBattle = new Game_QTEBattle();
+
+/*
+=====================================================
+Scene_Battle 
+=====================================================
+*/
+
+var qteBattle_sceneBattle_initialize_alias = Scene_Battle.prototype.initialize;
+Scene_Battle.prototype.initialize = function(){
+    qteBattle_sceneBattle_initialize_alias.call(this);
+    this._galleryWindow = null;
+}
+
+var qteBattle_sceneBattle_start_alias = Scene_Battle.prototype.start;
+Scene_Battle.prototype.start = function(){
+    qteBattle_sceneBattle_start_alias.call(this);
+}
+
+var qteBattle_sceneBattle_update_alias = Scene_Battle.prototype.update;
+Scene_Battle.prototype.update = function(){
+    qteBattle_sceneBattle_update_alias.call(this);
+    if(this._galleryWindow) this._galleryWindow.update();
+}
+
+Scene_Battle.prototype.createGalleryWindow = function(){
+    var statusWindow = this._statusWindow;
+    this._galleryWindow = new Window_Gallery();
+
+    this._galleryWindow.x = statusWindow.x;
+    this._galleryWindow.y = statusWindow.y - this._galleryWindow.height;
+    this._galleryWindow.width = statusWindow.width;
+
+    this.addChild(this._galleryWindow);
+}
+
+Scene_Battle.prototype.destroyGalleryWindow = function(){
+    this.removeChild(this._galleryWindow);
+    this._galleryWindow = null;
+}
+
+Scene_Battle.prototype.isCrosshairInTarget = function(){
+    var crosshairX = this._galleryWindow._crosshair.x + 30;
+    var targets = this._galleryWindow._targets;
+    return targets.find(hz => {
+        var zoneStart = hz.normalZoneSprite.x;
+        var zoneEnd = hz.normalZoneSprite.x + hz.normalZoneSprite.width;
+        return ((crosshairX >= zoneStart) && (crosshairX <= zoneEnd));
+    });
+}
+
+Scene_Battle.prototype.isCrosshairInCriticalTarget = function(target){
+    var crosshairX = this._galleryWindow._crosshair.x + 30;
+    var critStart = target.criticalZoneSprite.x;
+    var critEnd = target.criticalZoneSprite.x + target.criticalZoneSprite.width;
+    return ((crosshairX >= critStart) && (crosshairX <= critEnd));
+}
+
+var qteBattle_sceneBattle_commandAttack_alias = Scene_Battle.prototype.commandAttack;
+Scene_Battle.prototype.commandAttack = function() {
+    BattleManager.inputtingAction().setAttack();
+    if(!BattleManager.isQTESkill(BattleManager.inputtingAction())){
+        qteBattle_sceneBattle_commandAttack_alias.call(this);
+    } else {
+        this.selectNextCommand();
+    }
+
+};
+
+var qteBattle_battleManager_initMembers_alias = BattleManager.initMembers;
+BattleManager.initMembers = function(){
+    qteBattle_battleManager_initMembers_alias.call(this);
+    this._guaranteedMiss = false;
+    this._guaranteedCritical = false;
+}
+
+BattleManager.isQTESkill = function(action){
+    return action && action._item._dataClass === "skill" && QTEBattle.shootSkillIds.includes(action._item._itemId)
+}
+
+BattleManager.currentBattleEnemies = function(){
+    return this.allBattleMembers().filter(battleMember => battleMember instanceof Game_Enemy && battleMember.hp > 0);
+}
+
+BattleManager.randomizeBattleEnemy = function(){
+    const currentBattleEnemies = this.currentBattleEnemies();
+    const min = 0;
+    const max = currentBattleEnemies.length - 1;
+    return currentBattleEnemies[Math.floor(Math.random() * (max - min + 1)) + min];
+}
+
+var qteBattle_battleManager_startAction_alias = BattleManager.startAction;
+BattleManager.startAction = function() {
+    var subject = this._subject;
+    var action = subject.currentAction();
+    if(this.isQTESkill(action) && action._subjectEnemyIndex < 0){
+        // Set target based on where crosshair lands
+        SceneManager._scene.createGalleryWindow();
+        $gameQTEBattle._isActive = true;
+        this._action = action;
+        if(subject.ammo() <= 0){
+            this._logWindow.handleNoAmmo(subject);
+            SceneManager._scene.destroyGalleryWindow();
+            this.endAction();
+        } else {
+            this._logWindow.handleQTEStart(subject);
+            this._phase = 'phaseChange';
+        }
+    } else {
+        qteBattle_battleManager_startAction_alias.call(this);
+    }
+};
+
+// var qteBattle_battleManager_updateAction_alias = BattleManager.updateAction;
+// BattleManager.updateAction = function(){
+//     if(this.isQTESkill(this._action) && $gameQTEBattle._isActive){
+//         if($gameQTEBattle.isTriggered()){
+//             var target = SceneManager._scene.isCrosshairInTarget()
+//             if(target){
+//                 var critTarget = SceneManager._scene.isCrosshairInCriticalTarget(target);
+//                 if (critTarget) {
+//                     // Force critical
+//                     this._guaranteedCritical = true;
+//                 }
+//                 this._targets.push(target.enemy);
+//             } else {
+//                 // Force miss
+//                 this._guaranteedMiss = true;
+//                 this._targets.push(this.randomizeBattleEnemy());
+//             }
+//             // Reduce "ammo"
+//             this._subject.gainAmmo(-1);
+//             // Perform action
+//             this._logWindow.startAction(this._subject, this._action, this._targets);
+//             qteBattle_battleManager_updateAction_alias.call(this);
+//             $gameQTEBattle._isActive = false;
+//         }
+//     } else {
+//         qteBattle_battleManager_updateAction_alias.call(this);
+//     }
+// }
+
+
+var qteBattle_battleManager_endAction_alias = BattleManager.endAction;
+BattleManager.endAction = function(){
+    if(this.isQTESkill(this._action) && !$gameQTEBattle._isActive && this._action._subjectEnemyIndex < 0){
+        SceneManager._scene.destroyGalleryWindow();
+        qteBattle_battleManager_endAction_alias.call(this);
+    } else {
+        qteBattle_battleManager_endAction_alias.call(this);
+    }
+    
+}
+
+BattleManager.updatePhase = function() {
+    var phase = this._phaseSteps.shift();
+    if (phase) this.createPhaseChanges();
+    switch (phase) {
+    case 'setup':
+      this.createSetupActions();
+      break;
+    case 'whole':
+      this.createWholeActions();
+      break;
+    case 'target':
+      this.createTargetActions();
+      break;
+    case 'follow':
+      this.createFollowActions();
+      break;
+    case 'finish':
+      this.createFinishActions();
+      if($gameQTEBattle._targetEnemy){
+        this._logWindow.showNormalAnimation([$gameQTEBattle._targetEnemy], $dataSkills[this._action._item._itemId].animationId, false); // JamieScript
+        $gameQTEBattle._targetEnemy = null; // JamieScript
+      }
+      break;
+    default:
+      this.endAction();
+      break;
+    }
+};
+
+var qteBattle_battleManager_updatePhase_alias = BattleManager.updatePhase;
+BattleManager.updatePhase = function() {
+
+    if(this.isQTESkill(this._action) && $gameQTEBattle._isActive && this._action._subjectEnemyIndex < 0){
+
+        if($gameQTEBattle.isTriggered()){
+            var target = SceneManager._scene.isCrosshairInTarget()
+
+            if(target){
+                var critTarget = SceneManager._scene.isCrosshairInCriticalTarget(target);
+                if (critTarget) {
+                    // Force critical
+                    this._guaranteedCritical = true;
+                }
+                // this._targets.push(target.enemy);
+                $gameQTEBattle._targetEnemy = target.enemy;
+                this._allTargets = [target.enemy];
+                this._individualTargets = [target.enemy]; // BUG: This result in double hits
+            } else {
+                // Force miss
+                this._guaranteedMiss = true;
+                // this._targets.push(this.randomizeBattleEnemy());
+                this._allTargets = [this.randomizeBattleEnemy()];
+                this._individualTargets = [this.randomizeBattleEnemy()]; // BUG: This result in double hits
+            }
+
+
+            // Reduce "ammo"
+            this._subject.gainAmmo(-1);
+
+            // Perform action
+            this._phaseSteps = ['setup', 'whole', 'target', 'follow', 'finish'];
+            this._returnPhase = '';
+
+            $gameQTEBattle._isActive = false;
+
+        }
+        return;
+    } else {
+        qteBattle_battleManager_updatePhase_alias.call(this);
+        return;
+    }
+};
+
+/*
+=====================================================
+Gallery Window
+=====================================================
+*/
+
+function Window_Gallery(){
+    this.initialize.apply(this, arguments);
+}
+
+Object.setPrototypeOf(Window_Gallery.prototype, Window_Base.prototype);
+Window_Gallery.prototype.constructor = Window_Gallery;
+
+Window_Gallery.prototype.initialize = function(){
+    Window_Base.prototype.initialize.call(this, 0, 0, Graphics.boxWidth, 68);
+    this._crosshair = {
+        x: 0,
+        direction: "right",
+        speed: QTEBattle.crosshairSpeed,
+        icon: 1
+    }
+    this._targets = [];
+}
+
+Window_Gallery.prototype.update = function(){
+    this.contents.clear();
+    this.updateCrosshair();
+    if(this._targets.length <= 0) this.createTargets();
+}
+
+Window_Gallery.prototype.updateCrosshair = function(){
+    // Draw crosshair
+    var crosshair = this._crosshair;
+    this.drawIcon(crosshair.icon, crosshair.x, 0);
+
+    // Crosshair direction
+    if(crosshair.x >= (this.width - 70)) this._crosshair.direction = "left";
+    if(crosshair.x <= 0) this._crosshair.direction = "right";
+
+    // Crosshair velocity
+    if(!$gameQTEBattle._isActive) this._crosshair.speed = 0;
+    if(crosshair.direction === "right") this._crosshair.x += crosshair.speed;
+    else this._crosshair.x -= crosshair.speed;
+}
+
+Window_Gallery.prototype.createTargets = function(){
+    BattleManager.currentBattleEnemies().forEach((enemy, index) => {
+
+        // Get width of enemy sprite
+        var spriteWidth = BattleManager._spriteset.children[0].children[2].children.filter(enemy => enemy instanceof Sprite_Enemy)[index].width;
+
+        if(spriteWidth > 0){
+
+            // Add targets
+            var target = {};
+            target.index = index;
+            target.enemy = enemy;
+            target.normalZoneSprite = new Sprite(new Bitmap(QTEBattle.targetZoneWidth, 100));
+            this.addChildAt(target.normalZoneSprite, 2);
+
+            // Set the target x value and fill
+            target.normalZoneSprite.x = (enemy.screenX() - spriteWidth / 1.2);
+            target.normalZoneSprite.bitmap.fillRect(0, 8, QTEBattle.targetZoneWidth, 50, "lightgrey");
+
+            // Create critical target within target
+            target.criticalZoneSprite = this.createCriticalTarget(target.normalZoneSprite);
+            this._targets.push(target);
+
+        }
+    })
+}
+
+Window_Gallery.prototype.createCriticalTarget = function(parent){
+    var sprite = new Sprite(new Bitmap(QTEBattle.criticalTargetZoneWidth, 100));
+    var criticalTargetWidth = QTEBattle.criticalTargetZoneWidth;
+    sprite.x = (parent.x + parent.width) - (parent.width / 2) - (criticalTargetWidth / 2);
+    sprite.width = criticalTargetWidth;
+    sprite.bitmap.fillRect(0, 8, criticalTargetWidth, 50, "grey");
+
+    this.addChildAt(sprite, 3);
+    return sprite;
+}
+
+/*
+=====================================================
+Window_BattleLog
+=====================================================
+*/
+
+Window_BattleLog.prototype.handleQTEStart = function(subject) {
+    this.push('addText', `${subject.name()} aims their weapon...`);
+};
+
+Window_BattleLog.prototype.handleNoAmmo = function(subject) {
+    this.push('addText', `${subject.name()} is out of ammo...`);
+};
+
+/*
+=====================================================
+Game_Action
+=====================================================
+*/
+
+var qteBattle_gameAction_apply_alias = Game_Action.prototype.apply;
+Game_Action.prototype.apply = function(target) {
+    if(!BattleManager._guaranteedMiss && !BattleManager._guaranteedCritical){
+        qteBattle_gameAction_apply_alias.call(this, target);
+        return;
+    }
+    var result = target.result();
+    this.subject().clearResult();
+    result.clear();
+    result.used = this.testApply(target);
+    result.missed = BattleManager._guaranteedMiss ? true : (result.used && Math.random() >= this.itemHit(target));
+    result.evaded = (!result.missed && Math.random() < this.itemEva(target));
+    result.physical = this.isPhysical();
+    result.drain = this.isDrain();
+    console.log("Result", result);
+    if (result.isHit()) {
+        if (this.item().damage.type > 0) {
+            result.critical = BattleManager._guaranteedCritical ? true : (Math.random() < this.itemCri(target)); // Make critical hit if player is guaranteed
+            var value = this.makeDamageValue(target, result.critical);
+            console.log("Is Critical");
+            this.executeDamage(target, value);
+        }
+        this.item().effects.forEach(function(effect) {
+            this.applyItemEffect(target, effect);
+        }, this);
+        this.applyItemUserEffect(target);
+    }
+
+    if ($gameParty.inBattle()) {
+        target.startDamagePopup();
+        target.performResultEffects();
+        if (target !== this.subject()) this.subject().startDamagePopup();
+      }
+
+    BattleManager._guaranteedMiss = false; // Ensure the player no longer gets guaranteed misses
+    BattleManager._guaranteedCritical = false; // Ensure the player no longer gets guaranteed criticals
+
+};
+
+/*
+=====================================================
+Window_BattleStatus
+=====================================================
+*/
+
+var qteBattle_windowBattleStatus_drawGaugeAreaWithTp_alias = Window_BattleStatus.prototype.drawGaugeAreaWithTp;
+Window_BattleStatus.prototype.drawGaugeAreaWithTp = function(rect, actor) {
+    this.drawActorHp(actor, rect.x + 0, rect.y, 108);
+    this.drawActorAmmo(actor, rect.x + 123, rect.y, 96);
+    this.drawActorTp(actor, rect.x + 234, rect.y, 96);
+};
+
+Window_Base.prototype.drawActorAmmo = function(actor, x, y, width) {
+    width = width || 186;
+    var color1 = this.mpGaugeColor1();
+    var color2 = this.mpGaugeColor2();
+    var currentAmmo = actor.ammo();
+    var maxAmmo = actor.maxAmmo();
+    this.drawGauge(x, y, width, currentAmmo / maxAmmo, color1, color2);
+    this.changeTextColor(this.systemColor());
+    this.drawText("Ammo", x, y, 44);
+    this.drawCurrentAndMax(currentAmmo, maxAmmo, x, y, width,
+                           this.mpColor(actor), this.normalColor());
+};
+
+/*
+=====================================================
+Window_BattleStatus
+=====================================================
+*/
+
+var qteBattle_gameActor_initMembers_alias = Game_Actor.prototype.initMembers;
+Game_Actor.prototype.initMembers = function() {
+    qteBattle_gameActor_initMembers_alias.call(this);
+    this._maxAmmo = QTEBattle.defaultMaxAmmo;
+    this._ammo = this._maxAmmo;
+};
+
+Game_Actor.prototype.ammo = function() {
+    return this._ammo;
+};
+
+Game_Actor.prototype.gainAmmo = function(value){
+    if(this._ammo + value >= this._maxAmmo) this._ammo = this._maxAmmo;
+    else this._ammo += value;
+}
+
+Game_Actor.prototype.maxAmmo = function(){
+    return this._maxAmmo;
+}
+
+Game_Actor.prototype.gainMaxAmmo = function(value){
+    this._maxAmmo += value;
+}
